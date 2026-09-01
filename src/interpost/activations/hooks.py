@@ -58,10 +58,37 @@ class HookManager:
 
     @contextmanager
     def capture(self, layers: list[int]) -> Iterator[dict[int, torch.Tensor]]:
-        """Yield ``{layer_index: (B, S, D) hidden states}``, populated after the
-        forward pass runs inside the ``with`` block. Captured tensors retain grad.
+        """Yield ``{layer_index: (B, S, D) hidden states}``, populated once the
+        forward pass runs inside the ``with`` block.
+
+        The dict is keyed by the exact indices passed in (negative indices are
+        allowed and kept as-is). Captured tensors are the live layer outputs, so
+        they stay attached to the autograd graph — do not use with gradient
+        checkpointing, where the hook also fires during backward recomputation.
         """
-        raise NotImplementedError("HookManager.capture is implemented in Phase 1")
+        if not layers:
+            raise ValueError("capture() needs at least one layer index")
+        n = len(self.layers)
+        for li in layers:
+            if not -n <= li < n:
+                raise IndexError(f"layer {li} out of range for a {n}-layer model")
+
+        store: dict[int, torch.Tensor] = {}
+        handles = []
+
+        def _make_hook(key: int):
+            def _hook(_module, _inputs, output):
+                store[key] = output[0] if isinstance(output, tuple) else output
+
+            return _hook
+
+        try:
+            for li in layers:
+                handles.append(self.layers[li].register_forward_hook(_make_hook(li)))
+            yield store
+        finally:
+            for h in handles:
+                h.remove()
 
     @contextmanager
     def inject(
