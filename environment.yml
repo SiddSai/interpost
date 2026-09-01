@@ -1,0 +1,10 @@
+# Conda owns Python + pip; all ML deps come from pip (torch/trl/transformers are
+# better supported there). Matches the CI Python version.
+name: interpost
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --editable .[dev]

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "interpost"
+version = "0.0.0"
+description = "Interpretability signals as first-class primitives for DPO and online-RL post-training."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Siddharth Sai" }]
+keywords = ["interpretability", "rlhf", "dpo", "grpo", "probes", "post-training"]
+
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.46",
+    # PINNED ON PURPOSE. The trainer subclasses (Phase 1+) depend on internal TRL
+    # methods: DPOTrainer.get_batch_loss_metrics / concatenated_forward and the
+    # GRPOTrainer rollout path. Re-verify those hook points before bumping this.
+    # See docs/build-plan.md (Phase 0, "Prerequisites").
+    "trl==1.12.0",
+    "peft>=0.13",
+    "accelerate>=1.0",
+    "datasets>=3.0",
+    "scikit-learn>=1.4",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Phase 3+: external SAE loading.
+sae = ["sae-lens>=6.0", "sparsify"]
+# Eval-only tooling (post-hoc analysis, not the training hot path).
+eval = ["lm-eval>=0.4", "nnsight>=0.3"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.urls]
+Documentation = "https://github.com/CHANGE-ME/interpost/tree/main/docs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interpost"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: end-to-end TRL integration check (slow; downloads gpt2 on first run)",
+]
