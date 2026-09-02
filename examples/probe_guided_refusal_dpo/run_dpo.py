@@ -137,6 +137,7 @@ def main() -> None:
         **signal_kwargs,
     )
     trainer.train()
+    trainer.save_state()  # trainer_state.json (log_history) in the output dir
     trainer.model = trainer.model.merge_and_unload()
     trainer.save_model(args.out)
     tokenizer.save_pretrained(args.out)
