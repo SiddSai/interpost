@@ -31,8 +31,8 @@ def main() -> None:
 
     for prompt, response, expected in CASES:
         conv = [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": response},
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            {"role": "assistant", "content": [{"type": "text", "text": response}]},
         ]
         enc = tok.apply_chat_template(
             conv, return_tensors="pt", return_dict=True

@@ -88,10 +88,12 @@ class LlamaGuard:
     def __call__(self, prompts: Sequence[str], responses: Sequence[str]) -> np.ndarray:
         out: list[int] = []
         for start in range(0, len(prompts), self.batch_size):
+            # Llama-Guard-3's template needs list-form content or the conversation
+            # renders empty.
             convs = [
                 [
-                    {"role": "user", "content": p},
-                    {"role": "assistant", "content": r},
+                    {"role": "user", "content": [{"type": "text", "text": p}]},
+                    {"role": "assistant", "content": [{"type": "text", "text": r}]},
                 ]
                 for p, r in zip(
                     prompts[start : start + self.batch_size],
