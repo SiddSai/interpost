@@ -33,7 +33,7 @@ dependencies = [
 sae = ["sae-lens>=6.0", "sparsify"]
 # Eval-only tooling (post-hoc analysis, not the training hot path).
 eval = ["lm-eval>=0.4", "nnsight>=0.3"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "python-dotenv>=1.0"]
 
 [project.urls]
 Documentation = "https://github.com/CHANGE-ME/interpost/tree/main/docs"
@@ -50,6 +50,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # so tests can import `examples._shared.*`
 markers = [
     "smoke: end-to-end TRL integration check (slow; downloads gpt2 on first run)",
 ]
