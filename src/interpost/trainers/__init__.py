@@ -1,9 +1,10 @@
 """Trainer layer — thin TRL subclasses that call into Signal / Intervention.
 
-Planned: ``OfflineDPOTrainer`` (Phase 1, subclass of ``trl.DPOTrainer``),
-``OnlineGRPOTrainer`` (Phase 5, subclass of ``trl.GRPOTrainer``), ``OnlinePPOTrainer``
-(later), and ``RewardModelWrapper`` for the online reward-model intervention surface.
-Intentionally empty until Phase 1.
+``OfflineDPOTrainer`` (subclass of ``trl.DPOTrainer``) is done. Planned:
+``OnlineGRPOTrainer`` (subclass of ``trl.GRPOTrainer``), ``OnlinePPOTrainer``, and
+``RewardModelWrapper`` for the online reward-model intervention surface.
 """
 
-__all__: list[str] = []
+from interpost.trainers.offline_dpo import OfflineDPOTrainer
+
+__all__ = ["OfflineDPOTrainer"]

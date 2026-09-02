@@ -13,12 +13,10 @@ from contextlib import contextmanager
 import torch
 from torch import nn
 
-# Paths to the decoder-layer ``nn.ModuleList``, tried in order, across architectures.
-_LAYER_PATHS: tuple[str, ...] = (
-    "model.layers",  # Llama, Qwen2/3, Mistral, Gemma
-    "transformer.h",  # GPT-2, GPT-J, Falcon
-    "gpt_neox.layers",  # Pythia / GPT-NeoX
-)
+# Attributes that wrap the "real" model (PEFT, accelerate, HF); walked breadth-first.
+_WRAPPER_ATTRS: tuple[str, ...] = ("base_model", "model", "module", "transformer", "gpt_neox")
+# ModuleList attribute names that hold the decoder blocks.
+_LAYERS_ATTRS: tuple[str, ...] = ("layers", "h")
 
 
 class HookManager:
@@ -34,30 +32,30 @@ class HookManager:
 
     @staticmethod
     def _resolve_layers(model: nn.Module) -> nn.ModuleList:
-        """Return the decoder-layer ``ModuleList``, unwrapping PEFT / ``base_model``."""
-        roots = [model]
-        for attr in ("base_model", "model"):
-            inner = getattr(model, attr, None)
-            if isinstance(inner, nn.Module):
-                roots.append(inner)
-
-        for root in roots:
-            for path in _LAYER_PATHS:
-                obj: object = root
-                for part in path.split("."):
-                    obj = getattr(obj, part, None)
-                    if obj is None:
-                        break
-                if isinstance(obj, nn.ModuleList) and len(obj) > 0:
-                    return obj
-
+        """BFS through wrapper attrs (PEFT / accelerate / HF nesting) for the first
+        non-empty decoder-block ``ModuleList``."""
+        seen: set[int] = set()
+        queue: list[nn.Module] = [model]
+        while queue:
+            obj = queue.pop(0)
+            if id(obj) in seen or not isinstance(obj, nn.Module):
+                continue
+            seen.add(id(obj))
+            for attr in _LAYERS_ATTRS:
+                cand = getattr(obj, attr, None)
+                if isinstance(cand, nn.ModuleList) and len(cand) > 0:
+                    return cand
+            for attr in _WRAPPER_ATTRS:
+                queue.append(getattr(obj, attr, None))
         raise AttributeError(
             f"could not locate decoder layers on {type(model).__name__}; "
-            f"add its path to interpost.activations.hooks._LAYER_PATHS"
+            f"extend interpost.activations.hooks._WRAPPER_ATTRS / _LAYERS_ATTRS"
         )
 
     @contextmanager
-    def capture(self, layers: list[int]) -> Iterator[dict[int, torch.Tensor]]:
+    def capture(
+        self, layers: list[int], *, first: bool = False
+    ) -> Iterator[dict[int, torch.Tensor]]:
         """Yield ``{layer_index: (B, S, D) hidden states}``, populated once the
         forward pass runs inside the ``with`` block.
 
@@ -65,6 +63,11 @@ class HookManager:
         allowed and kept as-is). Captured tensors are the live layer outputs, so
         they stay attached to the autograd graph — do not use with gradient
         checkpointing, where the hook also fires during backward recomputation.
+
+        ``first=True`` keeps only the first forward per layer and ignores later
+        ones — use it when the ``with`` block triggers several forwards (e.g. a
+        DPO step's policy forward followed by a no-grad reference forward) and you
+        want the first (grad-carrying, policy) activations.
         """
         if not layers:
             raise ValueError("capture() needs at least one layer index")
@@ -78,6 +81,8 @@ class HookManager:
 
         def _make_hook(key: int):
             def _hook(_module, _inputs, output):
+                if first and key in store:
+                    return
                 store[key] = output[0] if isinstance(output, tuple) else output
 
             return _hook
