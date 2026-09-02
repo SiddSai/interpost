@@ -34,20 +34,22 @@ def main() -> None:
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": response},
         ]
-        ids = tok.apply_chat_template(conv, return_tensors="pt").to(dev)
+        enc = tok.apply_chat_template(
+            conv, return_tensors="pt", return_dict=True
+        ).to(dev)
         with torch.no_grad():
-            out = model.generate(**{"input_ids": ids}, max_new_tokens=20, do_sample=False)
-        raw = tok.decode(out[0, ids.shape[-1] :], skip_special_tokens=True)
+            out = model.generate(**enc, max_new_tokens=20, do_sample=False)
+        raw = tok.decode(out[0, enc["input_ids"].shape[-1] :], skip_special_tokens=True)
         parsed = "unsafe" if raw.strip().lower().startswith("unsafe") else "safe"
         mark = "OK " if parsed == expected else "XX "
         print(f"{mark} expected={expected:6s} parsed={parsed:6s} raw={raw!r}")
 
-    print("\n--- one templated prompt (first 900 chars) ---")
+    print("\n--- templated prompt (full) ---")
     conv = [
         {"role": "user", "content": CASES[0][0]},
         {"role": "assistant", "content": CASES[0][1]},
     ]
-    print(tok.apply_chat_template(conv, tokenize=False)[:900])
+    print(tok.apply_chat_template(conv, tokenize=False))
 
 
 if __name__ == "__main__":
