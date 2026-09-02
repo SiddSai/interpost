@@ -142,3 +142,18 @@ def probe_summary(probe: Probe) -> str:
     return json.dumps(
         {k: v for k, v in asdict(probe).items() if not isinstance(v, np.ndarray)}, indent=2
     )
+
+
+def save_probe_verified(probe: Probe, path: str | Path) -> Path:
+    """Save, then reload and assert it round-tripped. Returns the resolved path."""
+    out = Path(path).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    save_probe(probe, out)
+    check = load_probe(out)
+    if check.layer != probe.layer or abs(check.val_auc - probe.val_auc) > 1e-6:
+        raise RuntimeError(
+            f"save/load mismatch: wrote L{probe.layer} auc {probe.val_auc:.4f}, "
+            f"reloaded L{check.layer} auc {check.val_auc:.4f} from {out}"
+        )
+    print(f"saved + verified -> {out}  (L{check.layer}, val_auc {check.val_auc:.4f})")
+    return out

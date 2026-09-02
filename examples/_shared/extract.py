@@ -23,12 +23,16 @@ def _encode_pairs(
     prompts: Sequence[str],
     responses: Sequence[str],
     max_length: int,
+    prompt_add_special_tokens: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Right-pad ``prompt + response`` sequences. Returns (input_ids, attention_mask,
-    response_mask), each ``(B, S)``; ``response_mask`` is 1 only on response tokens."""
+    response_mask), each ``(B, S)``; ``response_mask`` is 1 only on response tokens.
+
+    ``prompt_add_special_tokens=False`` when the prompt is already a chat-templated
+    prefix (its BOS / role headers are literal text)."""
     rows: list[tuple[list[int], list[int]]] = []
     for prompt, response in zip(prompts, responses, strict=True):
-        p_ids = tokenizer(prompt, add_special_tokens=True).input_ids
+        p_ids = tokenizer(prompt, add_special_tokens=prompt_add_special_tokens).input_ids
         r_ids = tokenizer(response, add_special_tokens=False).input_ids
         r_ids = r_ids[: max(0, max_length - len(p_ids))]
         rows.append((p_ids, r_ids))
@@ -60,9 +64,13 @@ def extract_pooled(
     pooling: str = "mean",
     batch_size: int = 16,
     max_length: int = 512,
+    prompt_add_special_tokens: bool = True,
     device: str | torch.device | None = None,
 ) -> dict[int, np.ndarray]:
-    """Return ``{layer: (N, D) float32 array}`` of response-pooled activations."""
+    """Return ``{layer: (N, D) float32 array}`` of response-pooled activations.
+
+    Set ``prompt_add_special_tokens=False`` when ``prompts`` are chat-templated
+    prefixes (BOS / role headers already present as text)."""
     model.eval()
     device = device or next(model.parameters()).device
     hooks = HookManager(model)
@@ -74,7 +82,9 @@ def extract_pooled(
     ):
         p = prompts[start : start + batch_size]
         r = responses[start : start + batch_size]
-        input_ids, attn, resp_mask = _encode_pairs(tokenizer, p, r, max_length)
+        input_ids, attn, resp_mask = _encode_pairs(
+            tokenizer, p, r, max_length, prompt_add_special_tokens
+        )
         input_ids, attn, resp_mask = input_ids.to(device), attn.to(device), resp_mask.to(device)
         with hooks.capture(layers) as acts:
             model(input_ids=input_ids, attention_mask=attn)

@@ -7,7 +7,10 @@ if both stream and filter the same way.
 
 from __future__ import annotations
 
-from datasets import load_dataset
+import numpy as np
+from datasets import Dataset, load_dataset
+
+PKU_REPO = "PKU-Alignment/PKU-SafeRLHF"
 
 
 def stream_civil_comments_prompts(
@@ -36,3 +39,44 @@ def stream_civil_comments_prompts(
         if len(out) >= limit:
             break
     return out
+
+
+def _pku_rows(split: str, limit: int | None):
+    ds = load_dataset(PKU_REPO, split=split)
+    return ds.select(range(min(limit, len(ds)))) if limit else ds
+
+
+def load_pku_probe_examples(
+    split: str = "train", *, limit: int | None = None
+) -> tuple[list[str], list[str], np.ndarray]:
+    """Flatten PKU-SafeRLHF into (prompts, responses, labels) for probe fitting.
+
+    label = 1 if the response is unsafe (harmful compliance), 0 if safe (refusal /
+    benign). One row yields up to two examples (response_0, response_1).
+    """
+    prompts: list[str] = []
+    responses: list[str] = []
+    labels: list[int] = []
+    for row in _pku_rows(split, limit):
+        for i in (0, 1):
+            prompts.append(row["prompt"])
+            responses.append(row[f"response_{i}"])
+            labels.append(0 if row[f"is_response_{i}_safe"] else 1)
+    return prompts, responses, np.asarray(labels, dtype=int)
+
+
+def load_pku_preference_pairs(
+    split: str = "train", *, limit: int | None = None, seed: int = 0
+) -> Dataset:
+    """PKU-SafeRLHF preference pairs where exactly one response is safe — chosen =
+    the safe one, rejected = the unsafe one. Columns: prompt / chosen / rejected."""
+    rows = {"prompt": [], "chosen": [], "rejected": []}
+    for row in _pku_rows(split, limit):
+        s0, s1 = row["is_response_0_safe"], row["is_response_1_safe"]
+        if s0 == s1:
+            continue  # both safe or both unsafe -> no clean safety signal
+        safe_i = 0 if s0 else 1
+        rows["prompt"].append(row["prompt"])
+        rows["chosen"].append(row[f"response_{safe_i}"])
+        rows["rejected"].append(row[f"response_{1 - safe_i}"])
+    return Dataset.from_dict(rows).shuffle(seed=seed)
