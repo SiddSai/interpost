@@ -90,12 +90,14 @@ def generate_responses(
     *,
     k: int = 5,
     temperature: float = 1.0,
+    do_sample: bool = True,
     max_new_tokens: int = 64,
     batch_size: int = 8,
     seed: int = 0,
 ) -> list[list[str]]:
-    """Sample ``k`` continuations per prompt. Returns ``list[list[str]]`` (only the
-    newly generated text, prompt stripped)."""
+    """Generate ``k`` continuations per prompt. Returns ``list[list[str]]`` (only the
+    newly generated text, prompt stripped). ``do_sample=False`` forces greedy (k is
+    then effectively 1)."""
     model.eval()
     device = next(model.parameters()).device
     torch.manual_seed(seed)
@@ -103,20 +105,18 @@ def generate_responses(
     if pad_id is None:
         pad_id = tokenizer.eos_token_id
     out: list[list[str]] = []
+    gen_kwargs = dict(max_new_tokens=max_new_tokens, pad_token_id=pad_id, num_return_sequences=k)
+    if do_sample:
+        gen_kwargs.update(do_sample=True, temperature=temperature)
+    else:
+        gen_kwargs.update(do_sample=False)
 
     for start in range(0, len(prompts), batch_size):
         batch = list(prompts[start : start + batch_size])
         enc = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True, max_length=512
         ).to(device)
-        gen = model.generate(
-            **enc,
-            do_sample=True,
-            temperature=temperature,
-            num_return_sequences=k,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=pad_id,
-        )
+        gen = model.generate(**enc, **gen_kwargs)
         prompt_len = enc["input_ids"].shape[1]
         new_tokens = gen[:, prompt_len:].reshape(len(batch), k, -1)
         for i in range(len(batch)):

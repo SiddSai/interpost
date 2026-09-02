@@ -47,7 +47,8 @@ Non-negotiables, carried from the PRD:
 | Behavioral labeler (Phase 2+) | `meta-llama/Llama-Guard-3-1B` |
 | Pretrained SAE (Phase 3+) | `EleutherAI/sae-Llama-3.2-1B-131k` |
 | Fallback base model | `google/gemma-3-1b-pt` (the paper's exact model) |
-| Hardware target | single 16–24 GB GPU; LoRA by default, full-FT optional |
+| Hardware target | single GPU (1× A100-40GB is ample); **full fine-tune by default** |
+| Fine-tuning mode | **Full FT at 1B scale** — VRAM is not a constraint and it keeps the residual-stream activations the probe reads identical to what training actually moves (LoRA freezes the base and shifts only adapters, which muddies Mode 3's "did the representation relocate" question). LoRA stays as a config flag for when someone brings a 7B+ model. |
 
 **Pin the TRL version in `pyproject.toml`.** The trainer subclasses depend on
 `DPOTrainer.get_batch_loss_metrics` / `concatenated_forward` and
@@ -126,7 +127,8 @@ primitive, arriving early
 
 **1d — Run stock DPO** (no subclass yet)
 - [ ] `trl.DPOTrainer` on the probe-selected pairs and, separately, the
-      classifier-selected pairs. β=0.1, LoRA, `dataloader_pin_memory=False`.
+      classifier-selected pairs. β=0.1, **full fine-tune**, `dataloader_pin_memory=False`.
+      (Paper used LoRA; at 1B full FT is cheap and cleaner for the activation work.)
 - [ ] Toxicity: RoBERTa-selected baseline. Refusal: Llama-Guard-selected baseline.
 
 **1e — Eval** (`examples/probe_based_toxicity_dpo/eval.py`, `examples/probe_guided_refusal_dpo/eval.py`)
@@ -267,6 +269,10 @@ attached to an online trainer.
 result for online M2/M3, and the "DPO preserves representations" mechanism may not
 carry to on-policy RL.
 
+**Full fine-tune** for the policy here (not LoRA) — the whole point of online M3 is
+whether the policy relocates a representation to escape the monitor under RL pressure,
+and it can only do that if all its weights are free to move.
+
 - [ ] `OnlineTrainer` mixin (`trainers/online_base.py`):
   - [ ] `_rollout(prompts)` — generate, then one hooked scoring forward pass to
         capture policy activations for the completions.
@@ -339,7 +345,12 @@ an offline + online experiment using only `docs/`.
   `report_to` is set to).
 - **Devices/dtype:** signals and probes follow the policy model's device/dtype;
   `RawSAEAdapter` casts on load.
-- **LoRA by default** for the policy; full-FT behind a config flag.
+- **Full fine-tune by default** for the policy (offline and online); LoRA behind a
+  config flag, for 7B+ models only. Rationale: the interpretability signal reads the
+  policy's residual stream *during* training — with LoRA the base weights never move,
+  so the activations the probe sees drift differently than they would under real
+  fine-tuning, and Mode 3's laundering/obfuscation claims lose their teeth (the model
+  can't fully relocate a representation if most of it is frozen).
 - **Determinism:** single `seed` in config, threaded to torch / numpy / `datasets`.
 
 ---

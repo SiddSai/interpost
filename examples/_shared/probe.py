@@ -30,6 +30,7 @@ class Probe:
     coef_: np.ndarray  # (D,)
     intercept_: float
     val_auc: float
+    layer_aucs: dict[int, float] | None = None  # full sweep, for diagnostics
 
     def logit(self, acts: np.ndarray) -> np.ndarray:
         x = (np.asarray(acts, dtype=np.float64) - self.mean_) / self.scale_
@@ -69,32 +70,29 @@ def fit_probe(
         clf.fit(scaler.transform(x), y)
         return scaler, clf
 
-    best: Probe | None = None
+    layer_aucs: dict[int, float] = {}
     for layer, x in sorted(acts_by_layer.items()):
         x = np.asarray(x, dtype=np.float64)
         x_tr, x_va, y_tr, y_va = train_test_split(
             x, y, test_size=val_frac, random_state=seed, stratify=y
         )
         scaler, clf = _fit(x_tr, y_tr)
-        auc = float(roc_auc_score(y_va, clf.decision_function(scaler.transform(x_va))))
-        if best is None or auc > best.val_auc:
-            best = Probe(
-                layer=layer,
-                pooling=pooling,
-                mean_=scaler.mean_.copy(),
-                scale_=scaler.scale_.copy(),
-                coef_=clf.coef_[0].copy(),
-                intercept_=float(clf.intercept_[0]),
-                val_auc=auc,
-            )
+        layer_aucs[layer] = float(
+            roc_auc_score(y_va, clf.decision_function(scaler.transform(x_va)))
+        )
 
-    assert best is not None
-    scaler, clf = _fit(np.asarray(acts_by_layer[best.layer], dtype=np.float64), y)
-    best.mean_ = scaler.mean_.copy()
-    best.scale_ = scaler.scale_.copy()
-    best.coef_ = clf.coef_[0].copy()
-    best.intercept_ = float(clf.intercept_[0])
-    return best
+    best_layer = max(layer_aucs, key=layer_aucs.__getitem__)
+    scaler, clf = _fit(np.asarray(acts_by_layer[best_layer], dtype=np.float64), y)
+    return Probe(
+        layer=best_layer,
+        pooling=pooling,
+        mean_=scaler.mean_.copy(),
+        scale_=scaler.scale_.copy(),
+        coef_=clf.coef_[0].copy(),
+        intercept_=float(clf.intercept_[0]),
+        val_auc=layer_aucs[best_layer],
+        layer_aucs=layer_aucs,
+    )
 
 
 def save_probe(probe: Probe, path: str | Path) -> None:
@@ -112,6 +110,7 @@ def save_probe(probe: Probe, path: str | Path) -> None:
                     "pooling": probe.pooling,
                     "intercept_": probe.intercept_,
                     "val_auc": probe.val_auc,
+                    "layer_aucs": probe.layer_aucs,
                 }
             ).encode(),
             dtype=np.uint8,
@@ -125,6 +124,9 @@ def load_probe(path: str | Path) -> Probe:
         path = path.with_suffix(".npz")
     data = np.load(path)
     meta = json.loads(bytes(data["_meta"]).decode())
+    layer_aucs = meta.get("layer_aucs")
+    if layer_aucs is not None:
+        layer_aucs = {int(k): float(v) for k, v in layer_aucs.items()}
     return Probe(
         layer=int(meta["layer"]),
         pooling=str(meta["pooling"]),
@@ -133,6 +135,7 @@ def load_probe(path: str | Path) -> Probe:
         coef_=data["coef_"],
         intercept_=float(meta["intercept_"]),
         val_auc=float(meta["val_auc"]),
+        layer_aucs=layer_aucs,
     )
 
 

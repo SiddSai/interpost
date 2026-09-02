@@ -103,7 +103,7 @@ def main() -> None:
             tokenizer,
             prompts,
             k=1,
-            temperature=1.0,
+            do_sample=False,  # greedy, per Wehner & Fritz
             max_new_tokens=args.max_new_tokens,
             batch_size=args.batch_size,
             seed=args.seed,
@@ -140,6 +140,10 @@ def main() -> None:
         pooling="mean", batch_size=args.batch_size, device=device,
     )
     probe = fit_probe(acts, labels, pooling="mean", seed=args.seed)
+    print("layer sweep (val AUC):")
+    for li in sorted(probe.layer_aucs):
+        mark = "  <- selected" if li == probe.layer else ""
+        print(f"  L{li:2d}: {probe.layer_aucs[li]:.4f}{mark}")
     print(probe_summary(probe))
 
     out = Path(args.out)
