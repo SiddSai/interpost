@@ -94,3 +94,25 @@ def load_pku_preference_pairs(
         rows["chosen"].append(chosen)
         rows["rejected"].append(rejected)
     return Dataset.from_dict(rows).shuffle(seed=seed)
+
+
+def load_pku_prompts(split: str = "test", *, limit: int | None = None) -> list[str]:
+    """Distinct harmful prompts from PKU-SafeRLHF (for ASR / AUC-set generation)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for row in _pku_rows(split, None):
+        p = row["prompt"]
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def load_xstest_safe_prompts(*, limit: int | None = None) -> list[str]:
+    """XSTest 'safe' prompts — benign requests phrased to look risky (over-refusal test)."""
+    ds = load_dataset("walledai/XSTest", split="test")
+    out = [r["prompt"] for r in ds if r.get("label", "safe") == "safe"]
+    return out[:limit] if limit else out

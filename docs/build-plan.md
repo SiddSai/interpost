@@ -113,6 +113,23 @@ on a raw base model), effective batch ≥ 64, β=0.1, 1 epoch, `--sft-weight 0.1
 The size of the probe-vs-classifier preservation gap is a **reported finding**
 ("small on toxicity, as Lee et al. predicts"), not a gate.
 
+**RESULT (L9 probe, LoRA, ~4.4k matched pairs):**
+
+| | tox_rate | frozen AUC | dir + re-std | refit AUC |
+|---|---|---|---|---|
+| base | 0.35 | 0.80 | 0.80 | 0.82 |
+| probe-selected DPO | 0.005 | 0.56 | 0.56 | 0.82 |
+| RoBERTa-selected DPO | 0.005 | 0.58 | 0.58 | 0.82 |
+
+- Both methods detoxify equally; generations stay coherent.
+- Frozen probe collapses (~0.80→0.57). Re-standardizing recovers **nothing**
+  (`dir+re-std` ≈ `frozen`) ⇒ the toxicity **direction rotates**, it's not a scale shift.
+- `refit` holds at 0.82 ⇒ concept fully survives, relocated not destroyed.
+- **No probe-vs-classifier gap** — Wehner & Fritz's preservation effect does not
+  reproduce on toxicity (consistent with Lee et al.: DPO-toxicity is a bypass).
+- **Feeds Phase 3:** Mode 3 must constrain direction rotation; "re-standardize" is
+  not a viable preservation objective here.
+
 ---
 
 ## Phase 2 — Mode 2 loss-term DPO on refusal (the first real result)

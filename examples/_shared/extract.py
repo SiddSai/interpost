@@ -106,11 +106,14 @@ def generate_responses(
     do_sample: bool = True,
     max_new_tokens: int = 64,
     batch_size: int = 8,
+    add_special_tokens: bool = True,
     seed: int = 0,
 ) -> list[list[str]]:
     """Generate ``k`` continuations per prompt. Returns ``list[list[str]]`` (only the
     newly generated text, prompt stripped). ``do_sample=False`` forces greedy and
-    returns exactly one continuation per prompt regardless of ``k``."""
+    returns exactly one continuation per prompt regardless of ``k``.
+
+    ``add_special_tokens=False`` when ``prompts`` are chat-templated prefixes."""
     model.eval()
     device = next(model.parameters()).device
     torch.manual_seed(seed)
@@ -142,6 +145,7 @@ def generate_responses(
             padding_side="left",
             truncation=True,
             max_length=512,
+            add_special_tokens=add_special_tokens,
         ).to(device)
         gen = model.generate(**enc, **gen_kwargs)
         prompt_len = enc["input_ids"].shape[1]
