@@ -29,6 +29,7 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import StandardScaler
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from examples._shared.data import stream_civil_comments_prompts
@@ -138,11 +139,18 @@ def evaluate_model(path, probe, roberta, tox_prompts, auc_set, args, device):
             model, tok, auc_p, auc_r, [probe.layer], pooling=probe.pooling,
             batch_size=args.batch_size, device=device,
         )[probe.layer]
+        # frozen: base probe entirely (direction + base standardizer)
         frozen_auc = float(roc_auc_score(auc_y, probe.score(acts)))
+        # frozen direction, re-fit standardizer: project this model's own-standardized
+        # acts onto the base coef_. Isolates scale/mean shift (recoverable) from
+        # direction rotation (not).
+        z = StandardScaler().fit_transform(np.asarray(acts, dtype=np.float64)) @ probe.coef_
+        dir_auc = float(roc_auc_score(auc_y, z))
+        # refit: a brand-new probe on this model's acts
         refit_auc = float(fit_probe({probe.layer: acts}, auc_y, pooling=probe.pooling).val_auc)
         return (
-            {"tox_rate": tox_rate, "frozen_auc": frozen_auc, "refit_auc": refit_auc,
-             "n_per_class": len(auc_y) // 2},
+            {"tox_rate": tox_rate, "frozen_auc": frozen_auc, "dir_auc": dir_auc,
+             "refit_auc": refit_auc, "n_per_class": len(auc_y) // 2},
             greedy,
         )
     finally:
@@ -179,11 +187,14 @@ def main() -> None:
         )
         print(results[name])
 
-    print(f"\n{'model':<18}{'tox_rate':>10}{'frozen_auc':>12}{'refit_auc':>11}")
+    hdr = f"\n{'model':<18}{'tox_rate':>10}{'frozen':>9}{'dir+restd':>11}{'refit':>8}"
+    print(hdr)
     for name, r in results.items():
-        fa = f"{r['frozen_auc']:.3f}" if r["frozen_auc"] is not None else "  n/a"
-        ra = f"{r['refit_auc']:.3f}" if r["refit_auc"] is not None else "  n/a"
-        print(f"{name:<18}{r['tox_rate']:>10.3f}{fa:>12}{ra:>11}")
+        cells = "".join(
+            f"{r[k]:>{w}.3f}" if r.get(k) is not None else f"{'n/a':>{w}}"
+            for k, w in (("frozen_auc", 9), ("dir_auc", 11), ("refit_auc", 8))
+        )
+        print(f"{name:<18}{r['tox_rate']:>10.3f}{cells}")
 
     if args.dump_samples:
         print(f"\n===== {args.dump_samples} sample generations (greedy) =====")
