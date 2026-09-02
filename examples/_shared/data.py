@@ -66,17 +66,31 @@ def load_pku_probe_examples(
 
 
 def load_pku_preference_pairs(
-    split: str = "train", *, limit: int | None = None, seed: int = 0
+    split: str = "train",
+    *,
+    limit: int | None = None,
+    seed: int = 0,
+    conversational: bool = True,
 ) -> Dataset:
     """PKU-SafeRLHF preference pairs where exactly one response is safe — chosen =
-    the safe one, rejected = the unsafe one. Columns: prompt / chosen / rejected."""
+    the safe one, rejected = the unsafe one.
+
+    ``conversational=True`` (for instruct models) emits messages lists so TRL applies
+    the chat template; otherwise plain ``prompt`` / ``chosen`` / ``rejected`` strings.
+    """
     rows = {"prompt": [], "chosen": [], "rejected": []}
     for row in _pku_rows(split, limit):
         s0, s1 = row["is_response_0_safe"], row["is_response_1_safe"]
         if s0 == s1:
             continue  # both safe or both unsafe -> no clean safety signal
         safe_i = 0 if s0 else 1
-        rows["prompt"].append(row["prompt"])
-        rows["chosen"].append(row[f"response_{safe_i}"])
-        rows["rejected"].append(row[f"response_{1 - safe_i}"])
+        prompt, chosen = row["prompt"], row[f"response_{safe_i}"]
+        rejected = row[f"response_{1 - safe_i}"]
+        if conversational:
+            prompt = [{"role": "user", "content": prompt}]
+            chosen = [{"role": "assistant", "content": chosen}]
+            rejected = [{"role": "assistant", "content": rejected}]
+        rows["prompt"].append(prompt)
+        rows["chosen"].append(chosen)
+        rows["rejected"].append(rejected)
     return Dataset.from_dict(rows).shuffle(seed=seed)

@@ -59,3 +59,48 @@ class RobertaToxicity:
 
     def labels(self, texts: Sequence[str], threshold: float = 0.5) -> np.ndarray:
         return (self(texts) >= threshold).astype(int)
+
+
+class LlamaGuard:
+    """1 = unsafe, 0 = safe, for (prompt, response) pairs, via Llama-Guard-3-1B."""
+
+    def __init__(
+        self,
+        model_id: str = "meta-llama/Llama-Guard-3-1B",
+        *,
+        device: str | torch.device | None = None,
+        batch_size: int = 8,
+    ):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto")
+        self.model.eval()
+        if device is not None:
+            self.model.to(device)
+        self.device = next(self.model.parameters()).device
+        self.batch_size = batch_size
+        self._unsafe_id = self.tokenizer("unsafe", add_special_tokens=False).input_ids[0]
+
+    @torch.no_grad()
+    def __call__(self, prompts: Sequence[str], responses: Sequence[str]) -> np.ndarray:
+        out: list[int] = []
+        for start in range(0, len(prompts), self.batch_size):
+            convs = [
+                [
+                    {"role": "user", "content": p},
+                    {"role": "assistant", "content": r},
+                ]
+                for p, r in zip(
+                    prompts[start : start + self.batch_size],
+                    responses[start : start + self.batch_size],
+                    strict=True,
+                )
+            ]
+            enc = self.tokenizer.apply_chat_template(
+                convs, return_tensors="pt", padding=True, return_dict=True
+            ).to(self.device)
+            gen = self.model.generate(**enc, max_new_tokens=5, do_sample=False)
+            new = gen[:, enc["input_ids"].shape[1] :]
+            out.extend(int((row == self._unsafe_id).any()) for row in new)
+        return np.asarray(out, dtype=int)
