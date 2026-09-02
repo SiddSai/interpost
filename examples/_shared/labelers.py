@@ -74,6 +74,9 @@ class LlamaGuard:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
         self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto")
         self.model.eval()
         if device is not None:
