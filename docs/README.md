@@ -4,6 +4,7 @@
 |---|---|
 | [`prd.md`](./prd.md) | Project requirements — what we're building and why, scope, non-goals, definition of done. |
 | [`build-plan.md`](./build-plan.md) | Execution plan — phases, tasks, definition of done per phase, testing strategy. |
+| [`research-direction.md`](./research-direction.md) | The research program (*monitor stability under post-training*) that will consume interpost. **Out of scope for the build** — kept firewalled in `research/`. Its cheap-now hooks are the build plan's "Research seams". |
 
 **Architecture & literature rationale:** the [structure doc](https://claude.ai/code/artifact/9bc48659-ac0c-417d-9584-4174e86b8181)
 (layer diagram, package tree, `Signal` / `Intervention` interfaces, the mode-2/mode-3

@@ -369,11 +369,39 @@ an offline + online experiment using only `docs/`.
 
 ---
 
+## Research seams
+
+`docs/research-direction.md` describes a research program — *monitor stability under
+post-training* — that will **consume** interpost, never live inside it. The invariant:
+`research/` imports `interpost`, never the reverse. That program is out of scope for
+this build, but a few of its needs are cheap to wire now and a refactor to retrofit.
+Wire the seams; don't build the experiments.
+
+| Seam | Land it in | Why now |
+|---|---|---|
+| **`source: "policy" \| "reference"`** on every signal-consuming intervention (`LossShaping`, `FeatureReward`, `Preservation`). Phase 1 implements `"policy"` only; the param exists from day one. | param in Phase 1f; formal in the Phase 3 ABC | Policy-vs-frozen-reference is *the* axis the research compares (Goodfire's key choice). Threading a second model + a mode flag through both trainers later is a refactor; a default-valued param is not. Offline DPO already has `ref_model`; GRPO loads one when `beta>0`. |
+| **`SignalTrackingCallback`** — at each checkpoint, log frozen-probe + refit-probe AUROC and stash pooled activations for a fixed held-out eval set. | Phase 1f (offline), Phase 5 (online) | `signal_report` on a schedule. Without it the probe-transfer matrix can't be built retroactively — the activations/checkpoints are gone. Additive `TrainerCallback`, ~50 lines. |
+| **`eval/probe_transfer.py`** (`P[i,j]` = probe fit at checkpoint *i*, scored at *j*) and **`eval/representation_drift.py`** (probe-direction cosine, CKA/subspace overlap, retained causal-steering effect). | Phase 3, alongside generalizing `signal_report` | General "how did this representation move" primitives, useful beyond the research program. Make the matrix a loop over `signal_report`, not a parallel impl. |
+| **`research/` dir** + `README.md` with the import invariant. Empty otherwise. | now | Marks the boundary so nothing paper-specific leaks into `interpost/`. |
+
+Mode 3's preservation objective stays deliberately unspecified (frozen-probe
+performance / class geometry / monitored subspace / direction alignment / old-vs-new
+monitor agreement / causal effectiveness) — which one works is the empirical question
+the research program answers, not a thing to pick now.
+
+---
+
 ## Open decisions
 
 Tracked from the design discussion; resolve in-phase, don't pre-decide.
 
-1. **Layer & pooling** — sweep once in Phase 1, fix, expose as config.
+1. **Probe layer & pooling** — Phase 1b sweep (Llama-3.2-1B, 8k balanced samples,
+   toxicity) came back **flat**: every layer 0.92–0.94 val AUC, argmax = L2 within
+   noise. A flat curve ⇒ toxicity is a pervasive surface feature carried unchanged
+   through the residual stream. Leaning: **pin L9** (~mid-depth, matching the paper's
+   L20/34) rather than the lexical L2 — ~0.005 AUC cost, more honest test of the
+   representation-level claim. Strict argmax (paper's literal method) = L2. Pooling
+   stays `mean`.
 2. **Probe backend** — `sklearn` LR (simple, Phase 1) vs. a torch linear head
    (needed if we ever want the probe itself trainable in-loop). Default sklearn;
    revisit only if a use case demands it.
