@@ -66,7 +66,7 @@ class LlamaGuard:
 
     def __init__(
         self,
-        model_id: str = "meta-llama/Llama-Guard-3-1B",
+        model_id: str = "meta-llama/Llama-Guard-3-8B",
         *,
         device: str | torch.device | None = None,
         batch_size: int = 8,

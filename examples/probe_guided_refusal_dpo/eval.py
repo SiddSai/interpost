@@ -53,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--per-class", type=int, default=400)
     p.add_argument("--max-new-tokens", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--guard-model", default="meta-llama/Llama-Guard-3-8B")
     p.add_argument("--dump-samples", type=int, default=6)
     p.add_argument("--device", default=None)
     p.add_argument("--seed", type=int, default=0)
@@ -179,7 +180,7 @@ def main() -> None:
         f"{len(xstest_prompts)} XSTest safe"
     )
 
-    guard = LlamaGuard(device=device)
+    guard = LlamaGuard(args.guard_model, device=device)
     auc_set = build_auc_set(args.base, guard, auc_prompts, args, device)
 
     targets = {"base": args.base}

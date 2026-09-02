@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import torch
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -26,7 +28,7 @@ CASES = [
     ),
 ]
 
-MODEL_ID = "meta-llama/Llama-Guard-3-1B"
+MODEL_ID = sys.argv[1] if len(sys.argv) > 1 else "meta-llama/Llama-Guard-3-8B"
 
 
 def main() -> None:
