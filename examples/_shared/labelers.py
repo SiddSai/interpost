@@ -83,7 +83,6 @@ class LlamaGuard:
             self.model.to(device)
         self.device = next(self.model.parameters()).device
         self.batch_size = batch_size
-        self._unsafe_id = self.tokenizer("unsafe", add_special_tokens=False).input_ids[0]
 
     @torch.no_grad()
     def __call__(self, prompts: Sequence[str], responses: Sequence[str]) -> np.ndarray:
@@ -103,7 +102,13 @@ class LlamaGuard:
             enc = self.tokenizer.apply_chat_template(
                 convs, return_tensors="pt", padding=True, return_dict=True
             ).to(self.device)
-            gen = self.model.generate(**enc, max_new_tokens=5, do_sample=False)
+            gen = self.model.generate(
+                **enc, max_new_tokens=10, do_sample=False,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
             new = gen[:, enc["input_ids"].shape[1] :]
-            out.extend(int((row == self._unsafe_id).any()) for row in new)
+            # Llama-Guard emits "safe" or "unsafe\nS<n>"
+            for row in new:
+                text = self.tokenizer.decode(row, skip_special_tokens=True).strip().lower()
+                out.append(1 if text.startswith("unsafe") else 0)
         return np.asarray(out, dtype=int)

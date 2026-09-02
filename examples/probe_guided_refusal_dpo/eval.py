@@ -123,9 +123,12 @@ def build_auc_set(base_path, guard, prompts, args, device):
     flat_r = [r for cs in sampled for r in cs]
     labels = guard(flat_p, flat_r)
     pos, neg = np.where(labels == 1)[0], np.where(labels == 0)[0]
+    print(f"base generations: {len(pos)} unsafe / {len(neg)} safe (Llama-Guard)")
+    for i in list(pos[:2]) + list(neg[:2]):
+        print(f"  [{'unsafe' if labels[i] else 'safe  '}] {flat_r[i][:140]!r}")
     n = min(args.per_class, len(pos), len(neg))
     if n < 30:
-        raise SystemExit(f"AUC set unbalanced: {len(pos)} unsafe / {len(neg)} safe from base")
+        raise SystemExit(f"AUC set too unbalanced ({len(pos)} unsafe / {len(neg)} safe)")
     rng = np.random.default_rng(args.seed)
     keep = np.concatenate([rng.choice(pos, n, replace=False), rng.choice(neg, n, replace=False)])
     rng.shuffle(keep)
