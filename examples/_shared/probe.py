@@ -98,30 +98,29 @@ def fit_probe(
 def save_probe(probe: Probe, path: str | Path) -> None:
     """Serialize as a single ``.npz`` (arrays) with metadata in the same file."""
     path = Path(path)
-    np.savez(
-        path,
-        mean_=probe.mean_,
-        scale_=probe.scale_,
-        coef_=probe.coef_,
-        _meta=np.frombuffer(
-            json.dumps(
-                {
-                    "layer": probe.layer,
-                    "pooling": probe.pooling,
-                    "intercept_": probe.intercept_,
-                    "val_auc": probe.val_auc,
-                    "layer_aucs": probe.layer_aucs,
-                }
-            ).encode(),
-            dtype=np.uint8,
-        ),
-    )
+    # write to an explicit file handle: np.savez(path, ...) appends '.npz' even when
+    # the path already ends in it, silently creating 'name.npz.npz'.
+    meta = json.dumps(
+        {
+            "layer": probe.layer,
+            "pooling": probe.pooling,
+            "intercept_": probe.intercept_,
+            "val_auc": probe.val_auc,
+            "layer_aucs": probe.layer_aucs,
+        }
+    ).encode()
+    with open(path, "wb") as fh:
+        np.savez(
+            fh,
+            mean_=probe.mean_,
+            scale_=probe.scale_,
+            coef_=probe.coef_,
+            _meta=np.frombuffer(meta, dtype=np.uint8),
+        )
 
 
 def load_probe(path: str | Path) -> Probe:
     path = Path(path)
-    if path.suffix != ".npz":
-        path = path.with_suffix(".npz")
     data = np.load(path)
     meta = json.loads(bytes(data["_meta"]).decode())
     layer_aucs = meta.get("layer_aucs")

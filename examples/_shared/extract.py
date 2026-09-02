@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from interpost.activations import HookManager, pool
@@ -68,7 +69,9 @@ def extract_pooled(
     layers = list(layers)
     chunks: dict[int, list[np.ndarray]] = {li: [] for li in layers}
 
-    for start in range(0, len(prompts), batch_size):
+    for start in tqdm(
+        range(0, len(prompts), batch_size), desc="extract", unit="batch"
+    ):
         p = prompts[start : start + batch_size]
         r = responses[start : start + batch_size]
         input_ids, attn, resp_mask = _encode_pairs(tokenizer, p, r, max_length)
@@ -117,7 +120,9 @@ def generate_responses(
         gen_kwargs.update(do_sample=False, num_beams=1)
 
     out: list[list[str]] = []
-    for start in range(0, len(prompts), batch_size):
+    for start in tqdm(
+        range(0, len(prompts), batch_size), desc="generate", unit="batch"
+    ):
         batch = list(prompts[start : start + batch_size])
         # left-pad for batched generation, independent of the caller's tokenizer state
         enc = tokenizer(

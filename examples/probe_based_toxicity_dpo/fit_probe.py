@@ -23,7 +23,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from examples._shared.data import stream_civil_comments_prompts
 from examples._shared.extract import extract_pooled, generate_responses
 from examples._shared.labelers import RobertaToxicity
-from examples._shared.probe import fit_probe, probe_summary
+from examples._shared.probe import fit_probe, load_probe, probe_summary
 
 HERE = Path(__file__).parent
 
@@ -143,10 +143,15 @@ def main() -> None:
         print(f"  L{li:2d}: {probe.layer_aucs[li]:.4f}{mark}")
     print(probe_summary(probe))
 
-    out = Path(args.out)
+    out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     probe.save(out)
-    print(f"saved -> {out}")
+    check = load_probe(out)
+    assert check.layer == probe.layer and abs(check.val_auc - probe.val_auc) < 1e-6, (
+        f"save/load mismatch: wrote L{probe.layer} auc {probe.val_auc:.4f}, "
+        f"reloaded L{check.layer} auc {check.val_auc:.4f}"
+    )
+    print(f"saved + verified -> {out}  (L{check.layer}, val_auc {check.val_auc:.4f})")
 
 
 if __name__ == "__main__":
