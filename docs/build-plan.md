@@ -16,7 +16,7 @@ modes 1–3 across offline and online training.
 
 Non-negotiables, carried from the PRD:
 
-- **No general abstraction before Phase 3.** Phases 1–2 are a hardcoded vertical
+- **No general abstraction before Phase 4.** Phases 1–3 are hardcoded vertical
   slice on one model, one probe, one dataset. The `Signal` / `Intervention` ABCs are
   *extracted* from working code, not designed up front.
 - **Build on TRL.** `DPOTrainer` and `GRPOTrainer` are subclassed, never reimplemented.
@@ -25,9 +25,11 @@ Non-negotiables, carried from the PRD:
   Llama-Guard, HarmBench configs — all of that lives in `examples/`. Core has no
   `refusal` / `toxicity` / `safety` symbol.
 - **Modes 1–3 only.** Mode 4 (circuit-redirection) is a docstring stub.
-- **Correctness before extension.** Phase 1 reproduces a published result
-  (Wehner & Fritz, [arXiv 2510.21531](https://arxiv.org/abs/2510.21531)) before
-  anything new is attempted.
+- **Correctness before extension.** Phase 1 runs the Wehner & Fritz
+  ([arXiv 2510.21531](https://arxiv.org/abs/2510.21531)) toxicity pipeline end-to-end
+  as a plumbing check before the real work starts. It is not expected to reproduce
+  their preservation effect at full strength — toxicity is mechanistically a poor
+  drift testbed ([Lee et al. 2401.01967](https://arxiv.org/abs/2401.01967)).
 
 ---
 
@@ -39,13 +41,13 @@ Non-negotiables, carried from the PRD:
 |---|---|
 | Python | 3.11 |
 | Core deps | `torch`, `transformers`, `trl` (pinned), `peft`, `accelerate`, `datasets`, `scikit-learn`, `safetensors` |
-| SAE deps (Phase 3+) | `sae-lens`, `sparsify` |
+| SAE deps (Phase 4+) | `sae-lens`, `sparsify` |
 | Eval deps (extra) | `lm-eval` (optional), `nnsight` / `transformer-lens` (eval-only) |
 | Model — toxicity run | `meta-llama/Llama-3.2-1B` (base; non-aligned) |
 | Model — refusal run + Phase 2+ | `meta-llama/Llama-3.2-1B-Instruct` |
 | Data (Phase 1) | `google/civil_comments` + a RoBERTa toxicity classifier (`s-nlp/roberta_toxicity_classifier` or `unitary/toxic-bert`) for labels; `PKU-Alignment/PKU-SafeRLHF` (`-10K` subset) |
 | Behavioral labeler (Phase 2+) | `meta-llama/Llama-Guard-3-1B` |
-| Pretrained SAE (Phase 3+) | `EleutherAI/sae-Llama-3.2-1B-131k` |
+| Pretrained SAE (Phase 4+) | `EleutherAI/sae-Llama-3.2-1B-131k` |
 | Fallback base model | `google/gemma-3-1b-pt` (the paper's exact model) |
 | Hardware target | single GPU (1× A100-40GB is ample); **full fine-tune by default** |
 | Fine-tuning mode | **Full FT at 1B scale** — VRAM is not a constraint and it keeps the residual-stream activations the probe reads identical to what training actually moves (LoRA freezes the base and shifts only adapters, which muddies Mode 3's "did the representation relocate" question). LoRA stays as a config flag for when someone brings a 7B+ model. |
@@ -76,144 +78,121 @@ re-verify the hook points on every bump.
 
 ---
 
-## Phase 1 — Offline vertical slice: probe-selected preference DPO
+## Phase 1 — Toxicity plumbing check (Wehner & Fritz, lightweight)
 
-**Effort:** ~6–8 days
+**Effort:** ~1–2 days (mostly done). **Status: near-complete — see below.**
 
-> **What the paper actually does** (Wehner & Fritz, 2510.21531). Their "probe-based
-> DPO" uses the probe as a **preference-pair selector**, not a loss term: generate
-> k=5 candidates per prompt (temp 1.0), take the lowest-probe-score response as
-> `chosen` and the highest as `rejected`, then run **stock DPO** (β=0.1). The
-> classifier baseline is identical with RoBERTa picking the pairs. Their finding:
-> **probe-selected DPO preserves held-out + retrained probe AUC; classifier-selected
-> DPO degrades it.** Their loss-term method (NLL + λ·probe-penalty, λ=1) is the *SFT*
-> variant and is their *negative* result — SFT does not preserve. Base model:
-> Gemma-3-1B (non-aligned); probe at layer 20/34, mean-pooled over response tokens,
-> logistic regression w/ L2 on standardized activations; ≥500 train / 50 val samples;
-> LoRA; DPO dataset = 10k prompts, 70/20/10 split.
+> **Why this is now a checkbox, not the deliverable.** Wehner & Fritz's "probe-based
+> DPO" = probe picks `chosen`/`rejected` from k=5 candidates, then stock DPO; their
+> finding is that probe-selection *preserves* probe AUC where RoBERTa-selection
+> degrades it. But the mechanistic literature says this effect has little room to
+> show up on **toxicity specifically**: DPO reduces toxicity by *bypassing* toxic
+> regions with a distributed offset, not by rewriting the representation, which
+> **persists** ([Lee et al. 2401.01967](https://arxiv.org/abs/2401.01967)); and the
+> toxicity signal is linear at *every* layer (our L0–L15 sweep: 0.92–0.94 flat),
+> because it's a surface feature carried unchanged through the residual stream. So a
+> faithful toxicity reproduction mostly validates plumbing.
 
-**Goal:** reproduce that result, then run the same pipeline on a refusal probe.
+**Setup:** `meta-llama/Llama-3.2-1B` (base — an Instruct model won't emit toxic
+candidates), Civil Comments prompts, RoBERTa-labeled, probe mean-pooled over response
+tokens. `build_pairs` → probe-selected and RoBERTa-selected preference sets on the
+**same** prompts. **LoRA DPO** (matches the paper; far more stable than full-FT DPO
+on a raw base model), effective batch ≥ 64, β=0.1, 1 epoch, `--sft-weight 0.1`.
+`eval.py` scores a **fixed shared text set** through each model.
 
-1. **Toxicity** — the faithful reproduction. Model: `meta-llama/Llama-3.2-1B` (base;
-   an Instruct model won't emit enough toxic candidates). Probe: Civil Comments,
-   response-token mean-pool, RoBERTa ≥ 0.5 label.
-2. **Refusal / harmful-intent** — same pipeline, `Llama-3.2-1B-Instruct` +
-   PKU-SafeRLHF. Tests whether the finding generalizes and stands up the probe
-   Phases 2–3 build on.
+- [x] 1a activation capture (`HookManager.capture`, `pool`) + tests
+- [x] 1b `fit_probe` / `Probe` / layer sweep; toxicity probe fitted (val AUC ~0.94)
+- [x] 1c `select_pairs` + `build_pairs.py` (matched prompt sets)
+- [x] 1d `run_dpo.py` (stock `DPOTrainer`)
+- [x] 1e `eval.py` (fixed shared AUC text set — works even when detox zeroes toxic gens)
+- [ ] add LoRA + batch-size defaults to `run_dpo.py`
+- [ ] one clean LoRA run: probe-selected vs RoBERTa-selected, then `eval.py`
 
-Only the model, probe data, and eval metric differ between the two runs.
-
-**1a — Activation capture** (`activations/hooks.py`, `activations/pooling.py`) — **DONE**
-- [x] `HookManager.capture`, mask-aware `pool` (`last|mean|max|per_token`), tests.
-- [ ] `HookManager.inject` still deferred to Phase 3.
-
-**1b — Probe training** (`examples/_shared/`, local for now; generalized in Phase 3)
-- [ ] `extract.py`: batched pooled-activation extraction over a layer sweep
-      (teacher-forced forward on prompt+response, pool over the response span);
-      `generate_responses` helper for candidate sampling.
-- [ ] `probe.py`: `fit_probe(acts_by_layer, labels)` — standardize, `LogisticRegression`
-      (L2), pick the layer by val AUC; `Probe` dataclass with `score` / `logit` /
-      `direction`, `save_probe` / `load_probe` (joblib).
-- [ ] **Toxicity probe** — base Llama, Civil Comments, RoBERTa-labeled.
-- [ ] **Refusal probe** — Instruct Llama, PKU-SafeRLHF (harmful-compliance vs
-      refusal/benign); keep the 19 category labels for Phase 3.
-- [ ] Record chosen layers.
-
-**1c — Signal-selected preference pairs** (`examples/_shared/select.py`) — the Mode-1
-primitive, arriving early
-- [ ] `select_pairs(model, prompts, scorer, k=5, temperature=1.0) -> preference Dataset`:
-      sample k candidates, `chosen` = min score, `rejected` = max score.
-- [ ] `scorer` is any `texts -> scores` callable — a `Probe`, or an output classifier.
-
-**1d — Run stock DPO** (no subclass yet)
-- [ ] `trl.DPOTrainer` on the probe-selected pairs and, separately, the
-      classifier-selected pairs. β=0.1, **full fine-tune**, `dataloader_pin_memory=False`.
-      (Paper used LoRA; at 1B full FT is cheap and cleaner for the activation work.)
-- [ ] Toxicity: RoBERTa-selected baseline. Refusal: Llama-Guard-selected baseline.
-
-**1e — Eval** (`examples/probe_based_toxicity_dpo/eval.py`, `examples/probe_guided_refusal_dpo/eval.py`)
-- [ ] **Toxicity run:** toxicity rate = fraction of generations with RoBERTa ≥ 0.5 on
-      100 held-out toxic prompts.
-- [ ] **Refusal run:** HarmBench-subset ASR ↓ and XSTest over-refusal.
-- [ ] **Both — the key metric:** held-out probe AUC (2 fresh probes on separate data,
-      never in training) **and** retrained-probe AUC (2 probes refit on
-      post-training activations). Plus a capability check (perplexity / short MMLU).
-
-**1f — Loss-term variant + the negative result** (`trainers/offline_dpo.py`)
-- [ ] `OfflineDPOTrainer(trl.DPOTrainer)` — capture acts in `get_batch_loss_metrics`,
-      add one hardcoded `λ · f(probe_score(...))` term. (This is interpost's real
-      Mode-2 machinery; Phase 2 builds on it.)
-- [ ] Reproduce the paper's negative result: the analogous **probe-penalty SFT**
-      (NLL + λ·penalty, λ=1) does **not** preserve probe AUC the way probe-selected
-      DPO does — i.e. the effect is method-specific.
-
-**Done when:**
-- Toxicity: probe-selected DPO ↓ toxicity with retained held-out + retrained probe
-  AUC; classifier-selected DPO ↓ toxicity with **degraded** AUC — the paper's result
-  reproduces (direction + rough magnitude). Probe-penalty SFT does not preserve.
-- Refusal: the same comparison is run and characterized — same pattern (good) or a
-  documented divergence (input to Phase 2).
-
-**Risks:**
-- 1B may not separate probe- vs classifier-selected cleanly → larger model or sharper
-  eval, decided from the table.
-- Base Llama-3.2-1B may generate too little toxicity for good k=5 pairs → fall back to
-  `google/gemma-3-1b-pt` (the paper's exact model) or a more toxic prompt set.
-- The two domains may diverge. That is a result, not a bug.
+**Done when:** the pipeline runs end-to-end; probe-selected DPO measurably lowers
+`tox_rate` vs. base; `eval.py` produces sane frozen/refit AUC for all three models.
+The size of the probe-vs-classifier preservation gap is a **reported finding**
+("small on toxicity, as Lee et al. predicts"), not a gate.
 
 ---
 
-## Phase 2 — Mode 3 as a designed intervention
+## Phase 2 — Mode 2 loss-term DPO on refusal (the first real result)
 
-**Effort:** ~4–6 days (the metric design is the real work)
-**Goal:** on the refusal setup from Phase 1, show M2-alone erodes a re-fit probe's
-accuracy and M2+M3 holds it near target at a small capability cost.
+**Effort:** ~5–7 days. **This builds interpost's core offline primitive.**
 
-Reuses Phase 1's refusal probe, `PKU-SafeRLHF` loading, and `OfflineDPOTrainer` —
-Phase 2 only adds the `Preservation` intervention on top.
+Refusal, not toxicity: it's a *computed* post-alignment behavior with real
+representation structure (room to drift), DPO on an **instruct** model is stable (it
+*is* the post-SFT starting point), and **PKU-SafeRLHF ships preference pairs** — no
+candidate generation, no RoBERTa/Llama-Guard-for-selection. Method is interpost
+**Mode 2** (probe term in the loss), which is what the PRD's build-order step 1 asked
+for: "one probe, offline DPO, mode-2 loss shaping, before/after vs. vanilla DPO."
 
-**2a — `Preservation` intervention** (still example-local; generalized in Phase 3)
-- [ ] Add a `layers=[L]` arg to `fit_probe` (pins the layer instead of sweeping).
-- [ ] Rolling buffer of `(pooled_activation, behavioral_label)` from recent batches.
-- [ ] `refit_every` schedule: refit a fresh probe on the buffer **at the pinned
-      layer L** (so `legibility(t)` compares like-for-like across steps), compute
-      held-out AUROC → `legibility(t)`, logged every step.
-- [ ] Per-step penalty `weight · ReLU(legibility_target − legibility(t))`.
-- [ ] **Do not** feed the training-time probe's own score back as a target.
+**2a — `OfflineDPOTrainer(trl.DPOTrainer)`** (`trainers/offline_dpo.py`)
+- [ ] wrap the policy forward in `HookManager.capture` inside `get_batch_loss_metrics`
+- [ ] add one hardcoded term `λ · f(probe_score(pooled_rejected_acts))` (e.g. ReLU of
+      the probe logit on the rejected/harmful side)
+- [ ] log the term + probe score alongside DPO metrics; `dataloader_pin_memory=False`
 
-**2b — Behavioral labeler** (`examples/.../labelers.py`)
-- [ ] Wrap `Llama-Guard-3-1B` (or PKU's own safety label) as `completion -> {0,1}`
-      for buffer labels and eval ground truth.
+**2b — Refusal probe** (`examples/probe_guided_refusal_dpo/fit_probe.py`)
+- [ ] `Llama-3.2-1B-Instruct`, chat template. PKU-SafeRLHF: harmful-compliance
+      responses vs. refusals as the two classes. Layer sweep; pin the winner.
+- [ ] keep the 19 harm-category labels for Phase 5's `ProbeBank`.
 
-**2c — Experiment + eval**
-- [ ] Three runs: vanilla DPO / +M2 / +M2+M3 (M2 comes straight from Phase 1).
-- [ ] `eval/signal_report.py` **v0**: frozen-probe AUROC, refit-probe AUROC, the gap
-      between them (obfuscation vs. relocation), behavioral agreement.
-- [ ] Behavior eval: HarmBench-subset ASR, XSTest over-refusal, capability slice.
-- [ ] Optional: run the same M2/M2+M3 comparison on the toxicity probe too, if the
-      Phase 1 domains diverged and it's worth understanding why.
+**2c — Behavioral labeler** (`examples/_shared/labelers.py`)
+- [ ] `Llama-Guard-3-1B` wrapper `completion -> {0,1}` — **eval only** here.
 
-**Done when:** the three-way table shows M3 preserves refit-probe AUROC that
-M2-alone loses, without collapsing to "always refuse" (XSTest holds).
+**2d — Experiment + eval**
+- [ ] vanilla DPO vs. `OfflineDPOTrainer` + probe term, on PKU-SafeRLHF pairs, instruct
+      model, LoRA, β=0.1.
+- [ ] `eval.py` (refusal variant): frozen vs. refit probe AUC on a fixed text set;
+      HarmBench-subset ASR ↓; XSTest over-refusal (guard "always refuse"); capability slice.
+
+**Done when:** a vanilla-vs-M2 table shows the probe term shifts refusal behavior
+(ASR ↓ beyond vanilla, or a cleaner refusal representation) at acceptable capability
+cost — and the `HookManager`-in-`get_batch_loss_metrics` machinery is proven.
 
 ---
 
-## Phase 3 — Generalize the `Signal` / `Intervention` interface
+## Phase 3 — Mode 3: monitoring-preservation
+
+**Effort:** ~4–6 days (the metric design is the real work).
+**Goal:** on Phase 2's refusal + `OfflineDPOTrainer` setup, show M2-alone erodes a
+re-fit probe's accuracy and M2+M3 holds it near target at small capability cost.
+
+**3a — `Preservation` intervention** (example-local; generalized in Phase 4)
+- [ ] `fit_probe(layers=[L])` to pin the layer for mid-training re-fits.
+- [ ] rolling buffer of `(pooled_activation, behavioral_label)` from recent batches.
+- [ ] `refit_every` schedule: refit a fresh probe at pinned layer L on the buffer,
+      score against an **independent** Llama-Guard label → `legibility(t)`, logged.
+- [ ] per-step penalty `weight · ReLU(legibility_target − legibility(t))`.
+- [ ] **never** feed the training-time probe's own score back as a target.
+
+**3b — Experiment + eval**
+- [ ] three runs: vanilla DPO / +M2 / +M2+M3.
+- [ ] `eval/signal_report.py` v0: frozen-probe AUC, refit-probe AUC, the gap between
+      them (obfuscation vs. relocation), behavioral agreement.
+- [ ] HarmBench-subset ASR, XSTest, capability slice.
+
+**Done when:** the three-way table shows M3 preserves refit-probe AUC that M2-alone
+loses, without collapsing to "always refuse".
+
+---
+
+## Phase 4 — Generalize the `Signal` / `Intervention` interface
 
 **Effort:** ~4–6 days
-**Goal:** turn Phase 1–2's hardcoded code into the real ABCs, proven by adding
+**Goal:** turn Phase 2–3's hardcoded code into the real ABCs, proven by adding
 second and third `Signal` implementations that the interface was *not* shaped around.
 
 **3a — `Signal` ABC** (`signals/base.py`)
 - [ ] `fit`, `score`, `direction`; attrs `requires_fit`, `layers`, `pooling`.
-- [ ] Extract `LinearProbeSignal` from Phase 1's probe code. Support multi-output
+- [ ] Extract `LinearProbeSignal` from the Phase 1/2 probe code. Support multi-output
       (a `(B, K)` score) for the category bank.
 
 **3b — `Intervention` ABC** (`interventions/base.py`)
 - [ ] `on_dataset`, `on_offline_batch`, `on_rollout`, `on_reward_model` — all optional,
       default no-op/identity; `weight`, `contributes`.
-- [ ] Refactor Phase 1's term into `LossShaping` (`mode="term"`).
-- [ ] Refactor Phase 2's preservation into `Preservation`.
+- [ ] Refactor Phase 2's term into `LossShaping` (`mode="term"`).
+- [ ] Refactor Phase 3's preservation into `Preservation`.
 - [ ] `OfflineDPOTrainer` now iterates `self.interventions` generically.
 
 **3c — `SAEFeatureSignal` + adapters** (`signals/sae_feature.py`, `signals/sae_adapters.py`)
@@ -232,17 +211,17 @@ second and third `Signal` implementations that the interface was *not* shaped ar
 - [ ] `list[Signal] -> (B, K)`, plus reductions `mean | min | vote`.
 
 **3f — Regression gate**
-- [ ] Re-run Phase 1 end-to-end through the generalized interface, with the probe
+- [ ] Re-run Phase 2 end-to-end through the generalized interface, with the probe
       signal swapped for an `ActivationDirectionSignal`. Result must still hold.
 - [ ] `tests/conformance/` — every `Signal` round-trips `fit`→`score`→`direction`;
       every `Intervention` is a safe no-op through hooks it doesn't implement.
 
-**Done when:** the generalized interface reproduces Phase 1 with a different signal,
+**Done when:** the generalized interface reproduces Phase 2 with a different signal,
 and conformance tests pass.
 
 ---
 
-## Phase 4 — Mode 1 (data-level shaping)
+## Phase 5 — Mode 1 (data-level shaping)
 
 **Effort:** ~2–3 days
 
@@ -254,7 +233,7 @@ and conformance tests pass.
 - [ ] `OfflineDPOTrainer.__init__` runs `iv.on_dataset(self.train_dataset, scorer)`
       for each intervention **before** training. `DataShaping`'s batch/rollout hooks
       stay no-ops.
-- [ ] Confirm a `DataShaping` handed to the (Phase 5) online trainer is inert.
+- [ ] Confirm a `DataShaping` handed to the (Phase 6) online trainer is inert.
 - [ ] Experiment: probe-filtered PKU subset vs. full set, vanilla DPO both, compare
       safety + capability.
 
@@ -263,7 +242,7 @@ attached to an online trainer.
 
 ---
 
-## Phase 5 — Online trainer + reward-model surface
+## Phase 6 — Online trainer + reward-model surface
 
 **Effort:** ~6–9 days. **This is research, not porting** — there is no published
 result for online M2/M3, and the "DPO preserves representations" mechanism may not
@@ -300,14 +279,14 @@ under on-policy optimization.
 
 ---
 
-## Phase 6 — Package, docs, examples
+## Phase 7 — Package, docs, examples
 
 **Effort:** ~3–4 days
 
 - [ ] Finalize `pyproject.toml`, `pip install interpost` metadata, version `0.1.0`.
 - [ ] `examples/probe_based_toxicity_dpo/` — clean rewrite of Phase 1's toxicity run
       on the general interface. One script, one config, one results table.
-- [ ] `examples/probe_guided_refusal_dpo/` — Phase 1's refusal run + Phases 2 + 4 +
+- [ ] `examples/probe_guided_refusal_dpo/` — Phases 2 + 3 + 5 +
       the online piece from 5. Category-probe bank demo. All safety-specific code
       lives here.
 - [ ] `docs/`:
@@ -360,12 +339,13 @@ an offline + online experiment using only `docs/`.
 | Phase | Artifact | Gate to advance |
 |---|---|---|
 | 0 | installable skeleton, green smoke test | CI passes |
-| 1 | toxicity + refusal probe-vs-classifier DPO tables | toxicity reproduces Wehner & Fritz; refusal run characterized |
-| 2 | vanilla / M2 / M2+M3 refusal table | M3 preserves refit-probe AUROC M2 loses |
-| 3 | generalized ABCs + 3 signal types | Phase 1 reproduces through the interface with a swapped signal |
-| 4 | `data_shaping` before/after | inert when attached to an online trainer |
-| 5 | GRPO run with activation reward + RM surface | `signal_report` characterizes online legibility |
-| 6 | pip package + two examples + docs | third party runs an experiment from docs alone |
+| 1 | toxicity pipeline runs end-to-end (LoRA) | probe-selected DPO lowers tox_rate; eval gives sane frozen/refit AUC |
+| 2 | vanilla vs. M2 refusal table (`OfflineDPOTrainer`) | probe term shifts refusal behavior at acceptable capability cost; hook machinery proven |
+| 3 | vanilla / M2 / M2+M3 refusal table | M3 preserves refit-probe AUC that M2-alone loses |
+| 4 | generalized ABCs + 3 signal types | Phase 2 reproduces through the interface with a swapped signal |
+| 5 | `data_shaping` before/after | inert when attached to an online trainer |
+| 6 | GRPO run with activation reward + RM surface | `signal_report` characterizes online legibility |
+| 7 | pip package + examples + docs | third party runs an experiment from docs alone |
 
 ---
 
@@ -379,9 +359,9 @@ Wire the seams; don't build the experiments.
 
 | Seam | Land it in | Why now |
 |---|---|---|
-| **`source: "policy" \| "reference"`** on every signal-consuming intervention (`LossShaping`, `FeatureReward`, `Preservation`). Phase 1 implements `"policy"` only; the param exists from day one. | param in Phase 1f; formal in the Phase 3 ABC | Policy-vs-frozen-reference is *the* axis the research compares (Goodfire's key choice). Threading a second model + a mode flag through both trainers later is a refactor; a default-valued param is not. Offline DPO already has `ref_model`; GRPO loads one when `beta>0`. |
-| **`SignalTrackingCallback`** — at each checkpoint, log frozen-probe + refit-probe AUROC and stash pooled activations for a fixed held-out eval set. | Phase 1f (offline), Phase 5 (online) | `signal_report` on a schedule. Without it the probe-transfer matrix can't be built retroactively — the activations/checkpoints are gone. Additive `TrainerCallback`, ~50 lines. |
-| **`eval/probe_transfer.py`** (`P[i,j]` = probe fit at checkpoint *i*, scored at *j*) and **`eval/representation_drift.py`** (probe-direction cosine, CKA/subspace overlap, retained causal-steering effect). | Phase 3, alongside generalizing `signal_report` | General "how did this representation move" primitives, useful beyond the research program. Make the matrix a loop over `signal_report`, not a parallel impl. |
+| **`source: "policy" \| "reference"`** on every signal-consuming intervention (`LossShaping`, `FeatureReward`, `Preservation`). Phase 1 implements `"policy"` only; the param exists from day one. | param in Phase 2; formal in the Phase 4 ABC | Policy-vs-frozen-reference is *the* axis the research compares (Goodfire's key choice). Threading a second model + a mode flag through both trainers later is a refactor; a default-valued param is not. Offline DPO already has `ref_model`; GRPO loads one when `beta>0`. |
+| **`SignalTrackingCallback`** — at each checkpoint, log frozen-probe + refit-probe AUROC and stash pooled activations for a fixed held-out eval set. | Phase 2 (offline), Phase 6 (online) | `signal_report` on a schedule. Without it the probe-transfer matrix can't be built retroactively — the activations/checkpoints are gone. Additive `TrainerCallback`, ~50 lines. |
+| **`eval/probe_transfer.py`** (`P[i,j]` = probe fit at checkpoint *i*, scored at *j*) and **`eval/representation_drift.py`** (probe-direction cosine, CKA/subspace overlap, retained causal-steering effect). | Phase 4, alongside generalizing `signal_report` | General "how did this representation move" primitives, useful beyond the research program. Make the matrix a loop over `signal_report`, not a parallel impl. |
 | **`research/` dir** + `README.md` with the import invariant. Empty otherwise. | now | Marks the boundary so nothing paper-specific leaks into `interpost/`. |
 
 Mode 3's preservation objective stays deliberately unspecified (frozen-probe
@@ -406,7 +386,7 @@ Tracked from the design discussion; resolve in-phase, don't pre-decide.
    (needed if we ever want the probe itself trainable in-loop). Default sklearn;
    revisit only if a use case demands it.
 3. **Online headline** — probe-as-reward (M2 online, cleanest thesis demo) vs.
-   `R_rm − λ·probe` (RM surface). Do both in Phase 5; pick the headline from results.
-4. **PPO timing** — after Phase 5 lands GRPO, unless a user needs a value model sooner.
+   `R_rm − λ·probe` (RM surface). Do both in Phase 6; pick the headline from results.
+4. **PPO timing** — after Phase 6 lands GRPO, unless a user needs a value model sooner.
 5. **PRD citation** — whether to name Wehner & Fritz explicitly in `prd.md`'s
    Validation section (currently generic "probe-guided-DPO literature").

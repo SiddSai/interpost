@@ -96,31 +96,46 @@ def generate_responses(
     seed: int = 0,
 ) -> list[list[str]]:
     """Generate ``k`` continuations per prompt. Returns ``list[list[str]]`` (only the
-    newly generated text, prompt stripped). ``do_sample=False`` forces greedy (k is
-    then effectively 1)."""
+    newly generated text, prompt stripped). ``do_sample=False`` forces greedy and
+    returns exactly one continuation per prompt regardless of ``k``."""
     model.eval()
     device = next(model.parameters()).device
     torch.manual_seed(seed)
     pad_id = tokenizer.pad_token_id
     if pad_id is None:
         pad_id = tokenizer.eos_token_id
-    out: list[list[str]] = []
-    gen_kwargs = dict(max_new_tokens=max_new_tokens, pad_token_id=pad_id, num_return_sequences=k)
-    if do_sample:
-        gen_kwargs.update(do_sample=True, temperature=temperature)
-    else:
-        gen_kwargs.update(do_sample=False)
 
+    k_eff = k if do_sample else 1
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens, pad_token_id=pad_id, num_return_sequences=k_eff
+    )
+    if do_sample:
+        # pin top_p/top_k so temperature is the only sampling control (the model's
+        # generation_config may otherwise inject top_k=50 etc.)
+        gen_kwargs.update(do_sample=True, temperature=temperature, top_p=1.0, top_k=0)
+    else:
+        gen_kwargs.update(do_sample=False, num_beams=1)
+
+    out: list[list[str]] = []
     for start in range(0, len(prompts), batch_size):
         batch = list(prompts[start : start + batch_size])
+        # left-pad for batched generation, independent of the caller's tokenizer state
         enc = tokenizer(
-            batch, return_tensors="pt", padding=True, truncation=True, max_length=512
+            batch,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            truncation=True,
+            max_length=512,
         ).to(device)
         gen = model.generate(**enc, **gen_kwargs)
         prompt_len = enc["input_ids"].shape[1]
-        new_tokens = gen[:, prompt_len:].reshape(len(batch), k, -1)
+        new_tokens = gen[:, prompt_len:].reshape(len(batch), k_eff, -1)
         for i in range(len(batch)):
             out.append(
-                [tokenizer.decode(new_tokens[i, j], skip_special_tokens=True) for j in range(k)]
+                [
+                    tokenizer.decode(new_tokens[i, j], skip_special_tokens=True)
+                    for j in range(k_eff)
+                ]
             )
     return out

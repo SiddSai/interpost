@@ -17,10 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from datasets import load_dataset
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from examples._shared.data import stream_civil_comments_prompts
 from examples._shared.extract import extract_pooled, generate_responses
 from examples._shared.labelers import RobertaToxicity
 from examples._shared.probe import fit_probe, probe_summary
@@ -81,18 +81,15 @@ def main() -> None:
         else [int(x) for x in args.layers.split(",")]
     )
 
-    # --- prompts: Civil Comments text, length-filtered ---
-    raw = load_dataset("google/civil_comments", split="train", streaming=True)
-    prompts: list[str] = []
-    for row in raw:
-        text = row["text"].strip().replace("\n", " ")
-        if not (args.min_prompt_chars <= len(text) <= args.max_prompt_chars):
-            continue
-        if row["toxicity"] < args.min_prompt_toxicity:
-            continue
-        prompts.append(text)
-        if len(prompts) >= args.n_prompts:
-            break
+    # --- prompts: Civil Comments text, length- and toxicity-filtered ---
+    # build_pairs.py skips the first --n-prompts of these for a clean held-out split,
+    # so keep this filtering in sync (both call the shared helper).
+    prompts = stream_civil_comments_prompts(
+        min_toxicity=args.min_prompt_toxicity,
+        min_chars=args.min_prompt_chars,
+        max_chars=args.max_prompt_chars,
+        limit=args.n_prompts,
+    )
     print(f"prompts: {len(prompts)} (own toxicity >= {args.min_prompt_toxicity})")
 
     # --- generate one greedy continuation per prompt ---
